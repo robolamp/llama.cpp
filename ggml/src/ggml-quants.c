@@ -3644,6 +3644,16 @@ void quantize_row_q8_K(const float * restrict x, void * restrict y, int64_t k) {
     quantize_row_q8_K_ref(x, y, k);
 }
 
+size_t quantize_q8_K(const float * restrict src, void * restrict dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    // (void)quant_weights; // not used
+    const size_t row_size = ggml_row_size(GGML_TYPE_Q8_K, n_per_row);
+    if (!quant_weights) {
+        quantize_row_q8_K_ref(src, dst, (int64_t)nrow*n_per_row);
+    }
+    return nrow * row_size;
+}
+
+
 //===================================== Dot ptoducts =================================
 
 //

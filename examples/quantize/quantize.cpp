@@ -46,6 +46,7 @@ static const std::vector<struct quant_option> QUANT_OPTIONS = {
     { "Q5_K_M", LLAMA_FTYPE_MOSTLY_Q5_K_M, " 5.33G, +0.0569 ppl @ Llama-3-8B",  },
     { "Q6_K",   LLAMA_FTYPE_MOSTLY_Q6_K,   " 6.14G, +0.0217 ppl @ Llama-3-8B",  },
     { "Q8_0",   LLAMA_FTYPE_MOSTLY_Q8_0,   " 7.96G, +0.0026 ppl @ Llama-3-8B",  },
+    { "Q8_K",   LLAMA_FTYPE_MOSTLY_Q8_K,   " 7.96G, +0.0026 ppl @ Llama-3-8B",  },
     { "Q4_0_4_4", LLAMA_FTYPE_MOSTLY_Q4_0_4_4, " 4.34G, +0.4685 ppl @ Llama-3-8B", },
     { "Q4_0_4_8", LLAMA_FTYPE_MOSTLY_Q4_0_4_8, " 4.34G, +0.4685 ppl @ Llama-3-8B", },
     { "Q4_0_8_8", LLAMA_FTYPE_MOSTLY_Q4_0_8_8, " 4.34G, +0.4685 ppl @ Llama-3-8B", },
