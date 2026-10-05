@@ -26,6 +26,7 @@ TEXT_MODEL_MAP: dict[str, str] = {
     "BaiChuanForCausalLM": "baichuan",
     "BaichuanForCausalLM": "baichuan",
     "BailingMoeForCausalLM": "bailingmoe",
+    "AliceAIForCausalLM": "alice_ai",
     "BailingMoeV2ForCausalLM": "bailingmoe",
     "BailingMoeV3ForCausalLM": "bailingmoe3",
     "BambaForCausalLM": "granite",

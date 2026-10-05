@@ -633,6 +633,7 @@ class MODEL_ARCH(IntEnum):
     MAINCODER        = auto()
     KIMI_LINEAR      = auto()
     KIMI_K3          = auto()
+    ALICE_AI         = auto()
     TALKIE           = auto()
     MELLUM           = auto()
     NANBEIGE         = auto()
@@ -754,12 +755,23 @@ class MODEL_TENSOR(IntEnum):
     SSM_F_A              = auto() # Kimi Linear
     SSM_F_B              = auto() # Kimi Linear
     SSM_BETA             = auto() # Kimi Linear qwen3.5
+    SSM_B                = auto() # AliceAI b_proj (beta)
     SSM_G_A              = auto() # Kimi Linear
     SSM_G_B              = auto() # Kimi Linear
     SSM_G                = auto() # Kimi K3 (full-rank KDA gate, replaces SSM_G_A/SSM_G_B)
+    SSM_A_LOG_BIAS       = auto() # AliceAI KDA a_log_bias
+    SSM_DT_BIAS          = auto() # AliceAI KDA dt_bias
+    SSM_OUT_NORM         = auto() # AliceAI o_norm (RMSNorm over value_dim)
+    SSM_Q                = auto() # AliceAI KDA q_proj (linear attention)
+    SSM_K                = auto() # AliceAI KDA k_proj (linear attention)
+    SSM_V                = auto() # AliceAI KDA v_proj (linear attention)
+    SSM_O                = auto() # AliceAI KDA o_proj (linear attention)
     ATTN_RES_SCORE       = auto() # Kimi K3 (fused res_norm * res_proj, pre-attention)
+    ATTN_RES_NORM        = auto() # AliceAI per-layer attn_res_norm
     FFN_RES_SCORE        = auto() # Kimi K3 (fused res_norm * res_proj, pre-FFN)
+    FFN_RES_NORM         = auto() # AliceAI per-layer mlp_res_norm
     OUTPUT_RES_SCORE     = auto() # Kimi K3 (fused res_norm * res_proj, final)
+    OUTPUT_RES_NORM      = auto() # AliceAI final res_norm
     FFN_ROUTED_DOWN      = auto() # Kimi K3 (latent MoE: hidden -> latent)
     FFN_ROUTED_UP        = auto() # Kimi K3 (latent MoE: latent -> hidden)
     FFN_ROUTED_NORM      = auto() # Kimi K3 (latent MoE: norm on expert output)
@@ -1391,6 +1403,7 @@ MODEL_ARCH_NAMES: dict[MODEL_ARCH, str] = {
     MODEL_ARCH.MAINCODER:        "maincoder",
     MODEL_ARCH.KIMI_LINEAR:      "kimi-linear",
     MODEL_ARCH.KIMI_K3:          "kimi-k3",
+    MODEL_ARCH.ALICE_AI:         "alice_ai",
     MODEL_ARCH.TALKIE:           "talkie",
     MODEL_ARCH.MELLUM:           "mellum",
     MODEL_ARCH.NANBEIGE:         "nanbeige",
@@ -1510,12 +1523,23 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.SSM_F_A:                   "blk.{bid}.ssm_f_a",              # Kimi Linear
     MODEL_TENSOR.SSM_F_B:                   "blk.{bid}.ssm_f_b",              # Kimi Linear
     MODEL_TENSOR.SSM_BETA:                  "blk.{bid}.ssm_beta",             # Kimi Linear qwen3.5
+    MODEL_TENSOR.SSM_B:                     "blk.{bid}.ssm_b",                # AliceAI b_proj (beta)
     MODEL_TENSOR.SSM_G_A:                   "blk.{bid}.ssm_g_a",              # Kimi Linear
     MODEL_TENSOR.SSM_G_B:                   "blk.{bid}.ssm_g_b",              # Kimi Linear
     MODEL_TENSOR.SSM_G:                     "blk.{bid}.ssm_g",                # Kimi K3
+    MODEL_TENSOR.SSM_A_LOG_BIAS:            "blk.{bid}.ssm_a_log_bias",       # AliceAI KDA
+    MODEL_TENSOR.SSM_DT_BIAS:               "blk.{bid}.ssm_dt_bias",          # AliceAI KDA
+    MODEL_TENSOR.SSM_OUT_NORM:              "blk.{bid}.ssm_out_norm",         # AliceAI o_norm
+    MODEL_TENSOR.SSM_Q:                     "blk.{bid}.ssm_q",                # AliceAI KDA q_proj
+    MODEL_TENSOR.SSM_K:                     "blk.{bid}.ssm_k",                # AliceAI KDA k_proj
+    MODEL_TENSOR.SSM_V:                     "blk.{bid}.ssm_v",                # AliceAI KDA v_proj
+    MODEL_TENSOR.SSM_O:                     "blk.{bid}.ssm_o",                # AliceAI KDA o_proj
     MODEL_TENSOR.ATTN_RES_SCORE:            "blk.{bid}.attn_res_score",       # Kimi K3
+    MODEL_TENSOR.ATTN_RES_NORM:             "blk.{bid}.attn_res_norm",        # AliceAI
     MODEL_TENSOR.FFN_RES_SCORE:             "blk.{bid}.ffn_res_score",        # Kimi K3
+    MODEL_TENSOR.FFN_RES_NORM:              "blk.{bid}.ffn_res_norm",         # AliceAI
     MODEL_TENSOR.OUTPUT_RES_SCORE:          "output_res_score",               # Kimi K3
+    MODEL_TENSOR.OUTPUT_RES_NORM:           "output_res_norm",                # AliceAI
     MODEL_TENSOR.FFN_ROUTED_DOWN:           "blk.{bid}.ffn_routed_down",      # Kimi K3
     MODEL_TENSOR.FFN_ROUTED_UP:             "blk.{bid}.ffn_routed_up",        # Kimi K3
     MODEL_TENSOR.FFN_ROUTED_NORM:           "blk.{bid}.ffn_routed_norm",      # Kimi K3
@@ -5496,6 +5520,48 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.FFN_ROUTED_DOWN,
         MODEL_TENSOR.FFN_ROUTED_UP,
         MODEL_TENSOR.FFN_ROUTED_NORM,
+    ],
+    MODEL_ARCH.ALICE_AI: [
+        MODEL_TENSOR.TOKEN_EMBD,
+        MODEL_TENSOR.OUTPUT_NORM,
+        MODEL_TENSOR.OUTPUT_RES_SCORE,
+        MODEL_TENSOR.OUTPUT_RES_NORM,
+        MODEL_TENSOR.OUTPUT,
+        MODEL_TENSOR.ATTN_NORM,
+        MODEL_TENSOR.ATTN_Q,
+        MODEL_TENSOR.ATTN_K,
+        MODEL_TENSOR.ATTN_V,
+        MODEL_TENSOR.ATTN_OUT,
+        MODEL_TENSOR.ATTN_Q_NORM,
+        MODEL_TENSOR.ATTN_K_NORM,
+        MODEL_TENSOR.SSM_Q,
+        MODEL_TENSOR.SSM_K,
+        MODEL_TENSOR.SSM_V,
+        MODEL_TENSOR.SSM_O,
+        MODEL_TENSOR.SSM_CONV1D_Q,
+        MODEL_TENSOR.SSM_CONV1D_K,
+        MODEL_TENSOR.SSM_CONV1D_V,
+        MODEL_TENSOR.SSM_F_A,
+        MODEL_TENSOR.SSM_F_B,
+        MODEL_TENSOR.SSM_B,
+        MODEL_TENSOR.SSM_G_A,
+        MODEL_TENSOR.SSM_G_B,
+        MODEL_TENSOR.SSM_OUT_NORM,
+        MODEL_TENSOR.SSM_A_LOG_BIAS,
+        MODEL_TENSOR.SSM_DT_BIAS,
+        MODEL_TENSOR.ATTN_RES_SCORE,
+        MODEL_TENSOR.ATTN_RES_NORM,
+        MODEL_TENSOR.FFN_NORM,
+        MODEL_TENSOR.FFN_GATE_INP,
+        MODEL_TENSOR.FFN_GATE_UP_EXP,
+        MODEL_TENSOR.FFN_DOWN_EXP,
+        MODEL_TENSOR.FFN_GATE_INP_SHEXP,
+        MODEL_TENSOR.FFN_GATE_SHEXP,
+        MODEL_TENSOR.FFN_UP_SHEXP,
+        MODEL_TENSOR.FFN_DOWN_SHEXP,
+        MODEL_TENSOR.FFN_RES_SCORE,
+        MODEL_TENSOR.FFN_RES_NORM,
+        MODEL_TENSOR.FFN_EXP_PROBS_B,
     ],
     MODEL_ARCH.TALKIE: [
         MODEL_TENSOR.TOKEN_EMBD,

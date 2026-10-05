@@ -179,6 +179,13 @@ class TensorNameMap:
         MODEL_TENSOR.A_QF_PROJ_LINEAR: (
             "projector.linear",
         ),
+        # AliceAI global res tensors
+        MODEL_TENSOR.OUTPUT_RES_SCORE: (
+            "model.attnres_final.res_proj",
+        ),
+        MODEL_TENSOR.OUTPUT_RES_NORM: (
+            "model.attnres_final.res_norm_weight",
+        ),
     }
 
     block_mappings_cfg: dict[MODEL_TENSOR, tuple[str, ...]] = {
@@ -478,9 +485,11 @@ class TensorNameMap:
             "model.layers.{bid}.mlp.shared_expert_gate", # qwen2moe
         ),
 
-        MODEL_TENSOR.FFN_EXP_PROBS_B: (
-            "model.layers.{bid}.mlp.gate.e_score_correction",               # deepseek-v3 dots1
-            "model.layers.{bid}.mlp.moe_statics.e_score_correction",        # ernie4.5-moe
+            MODEL_TENSOR.FFN_EXP_PROBS_B: (
+                "model.layers.{bid}.mlp.gate.e_score_correction",               # deepseek-v3 dots1
+                "model.layers.{bid}.mlp.gate.e_score_correction.bias",           # alice-ai (buffer -> .bias)
+                "model.layers.{bid}.mlp.gate.e_score_correction_bias",           # alice-ai (direct)
+                "model.layers.{bid}.mlp.moe_statics.e_score_correction",        # ernie4.5-moe
             "model.layers.{bid}.mlp.gate.expert_bias",                      # bailingmoe2
             "model.layers.{bid}.mlp.expert_bias",                           # afmoe
             "model.layers.{bid}.feed_forward.expert_bias",                  # lfm2moe
@@ -2826,6 +2835,114 @@ class TensorNameMap:
             ),
             MODEL_TENSOR.PLE_CONV1D: (
                 "model.layers.{bid}.ple.conv1d",
+            ),
+        },
+        MODEL_ARCH.ALICE_AI: {
+            MODEL_TENSOR.ATTN_NORM: (
+                "model.layers.{bid}.input_layernorm",
+            ),
+            MODEL_TENSOR.FFN_NORM: (
+                "model.layers.{bid}.post_attention_layernorm",
+            ),
+            MODEL_TENSOR.ATTN_Q: (
+                "model.layers.{bid}.self_attn.q_proj",
+            ),
+            MODEL_TENSOR.ATTN_K: (
+                "model.layers.{bid}.self_attn.k_proj",
+            ),
+            MODEL_TENSOR.ATTN_V: (
+                "model.layers.{bid}.self_attn.v_proj",
+            ),
+            MODEL_TENSOR.ATTN_OUT: (
+                "model.layers.{bid}.self_attn.o_proj",
+            ),
+            MODEL_TENSOR.ATTN_Q_NORM: (
+                "model.layers.{bid}.self_attn.q_norm",
+            ),
+            MODEL_TENSOR.ATTN_K_NORM: (
+                "model.layers.{bid}.self_attn.k_norm",
+            ),
+            MODEL_TENSOR.SSM_Q: (
+                "model.layers.{bid}.linear_attn.q_proj",
+            ),
+            MODEL_TENSOR.SSM_K: (
+                "model.layers.{bid}.linear_attn.k_proj",
+            ),
+            MODEL_TENSOR.SSM_V: (
+                "model.layers.{bid}.linear_attn.v_proj",
+            ),
+            MODEL_TENSOR.SSM_O: (
+                "model.layers.{bid}.linear_attn.o_proj",
+            ),
+            MODEL_TENSOR.SSM_CONV1D_Q: (
+                "model.layers.{bid}.linear_attn.q_conv1d",
+            ),
+            MODEL_TENSOR.SSM_CONV1D_K: (
+                "model.layers.{bid}.linear_attn.k_conv1d",
+            ),
+            MODEL_TENSOR.SSM_CONV1D_V: (
+                "model.layers.{bid}.linear_attn.v_conv1d",
+            ),
+            MODEL_TENSOR.SSM_F_A: (
+                "model.layers.{bid}.linear_attn.f_a_proj",
+            ),
+            MODEL_TENSOR.SSM_F_B: (
+                "model.layers.{bid}.linear_attn.f_b_proj",
+            ),
+            MODEL_TENSOR.SSM_B: (
+                "model.layers.{bid}.linear_attn.b_proj",
+            ),
+            MODEL_TENSOR.SSM_G_A: (
+                "model.layers.{bid}.linear_attn.g_a_proj",
+            ),
+            MODEL_TENSOR.SSM_G_B: (
+                "model.layers.{bid}.linear_attn.g_b_proj",
+            ),
+            MODEL_TENSOR.SSM_OUT_NORM: (
+                "model.layers.{bid}.linear_attn.o_norm",
+            ),
+            MODEL_TENSOR.SSM_A_LOG_BIAS: (
+                "model.layers.{bid}.linear_attn.a_log_bias",
+            ),
+            MODEL_TENSOR.SSM_DT_BIAS: (
+                "model.layers.{bid}.linear_attn.dt_bias",
+            ),
+            MODEL_TENSOR.ATTN_RES_SCORE: (
+                "model.layers.{bid}.attn_res_proj",
+            ),
+            MODEL_TENSOR.ATTN_RES_NORM: (
+                "model.layers.{bid}.attn_res_norm_weight",
+            ),
+            MODEL_TENSOR.FFN_RES_SCORE: (
+                "model.layers.{bid}.mlp_res_proj",
+            ),
+            MODEL_TENSOR.FFN_RES_NORM: (
+                "model.layers.{bid}.mlp_res_norm_weight",
+            ),
+            MODEL_TENSOR.FFN_GATE_INP: (
+                "model.layers.{bid}.mlp.gate.weight",
+            ),
+            MODEL_TENSOR.FFN_EXP_PROBS_B: (
+                "model.layers.{bid}.mlp.gate.e_score_correction_bias",
+                "model.layers.{bid}.mlp.gate.e_score_correction.bias",
+            ),
+            MODEL_TENSOR.FFN_GATE_INP_SHEXP: (
+                "model.layers.{bid}.mlp.shared_expert_gate",
+            ),
+            MODEL_TENSOR.FFN_GATE_UP_EXP: (
+                "model.layers.{bid}.mlp.experts.gate_up_proj",
+            ),
+            MODEL_TENSOR.FFN_DOWN_EXP: (
+                "model.layers.{bid}.mlp.experts.down_proj",
+            ),
+            MODEL_TENSOR.FFN_GATE_SHEXP: (
+                "model.layers.{bid}.mlp.shared_expert.gate_proj",
+            ),
+            MODEL_TENSOR.FFN_UP_SHEXP: (
+                "model.layers.{bid}.mlp.shared_expert.up_proj",
+            ),
+            MODEL_TENSOR.FFN_DOWN_SHEXP: (
+                "model.layers.{bid}.mlp.shared_expert.down_proj",
             ),
         },
     }

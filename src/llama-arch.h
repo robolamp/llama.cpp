@@ -153,6 +153,7 @@ enum llm_arch {
     LLM_ARCH_MAINCODER,
     LLM_ARCH_KIMI_LINEAR,
     LLM_ARCH_KIMI_K3,
+    LLM_ARCH_ALICE_AI,
     LLM_ARCH_TALKIE,
     LLM_ARCH_MELLUM,
     LLM_ARCH_EAGLE3,
@@ -445,6 +446,7 @@ enum llm_tensor {
     LLM_TENSOR_OUTPUT,
     LLM_TENSOR_OUTPUT_NORM,
     LLM_TENSOR_OUTPUT_NORM_LFM2, // fix for wrong tensor name
+    LLM_TENSOR_OUTPUT_RES_NORM,
     LLM_TENSOR_ROPE_FREQS,
     LLM_TENSOR_ROPE_FACTORS_LONG,
     LLM_TENSOR_ROPE_FACTORS_SHORT,
@@ -518,6 +520,10 @@ enum llm_tensor {
     LLM_TENSOR_SSM_DT_NORM,
     LLM_TENSOR_SSM_A,
     LLM_TENSOR_SSM_A_NOSCAN,        // qwen3next special case with MUL instead of SSM_SCAN
+    LLM_TENSOR_SSM_A_LOG,           // alice_ai: log-space A parameter (ssm_a_log_bias)
+    LLM_TENSOR_SSM_O,  // alice: KDA output projection (ssm_o)
+    LLM_TENSOR_SSM_DT_BIAS,  // alice: KDA dt bias (ssm_dt_bias)
+    LLM_TENSOR_SSM_OUT_NORM, // alice: KDA output norm (ssm_out_norm)
     LLM_TENSOR_SSM_B_NORM,
     LLM_TENSOR_SSM_C_NORM,
     LLM_TENSOR_SSM_D,
@@ -534,10 +540,16 @@ enum llm_tensor {
     LLM_TENSOR_SSM_BETA,            // kimi: beta mixing coefficient and qwen3.5
     LLM_TENSOR_SSM_G_A,             // kimi: output gate projection A
     LLM_TENSOR_SSM_G_B,             // kimi: output gate projection B
+    LLM_TENSOR_SSM_Q,               // alice_ai: KDA query projection (ssm_q)
+    LLM_TENSOR_SSM_K,               // alice_ai: KDA key projection (ssm_k)
+    LLM_TENSOR_SSM_V,               // alice_ai: KDA value projection (ssm_v)
+    LLM_TENSOR_SSM_B,               // alice_ai: KDA bias projection (ssm_b)
     LLM_TENSOR_SSM_G,               // kimi-k3: full-rank KDA gate
     LLM_TENSOR_ATTN_RES_SCORE,      // kimi-k3: fused res_norm*res_proj (pre-attn)
     LLM_TENSOR_FFN_RES_SCORE,       // kimi-k3: fused res_norm*res_proj (pre-ffn)
     LLM_TENSOR_OUTPUT_RES_SCORE,    // kimi-k3: fused res_norm*res_proj (final)
+    LLM_TENSOR_ATTN_RES_NORM,       // alice_ai: per-layer attention residual norm
+    LLM_TENSOR_FFN_RES_NORM,        // alice_ai: per-layer ffn residual norm
     LLM_TENSOR_FFN_ROUTED_DOWN,     // kimi-k3: latent MoE down
     LLM_TENSOR_FFN_ROUTED_UP,       // kimi-k3: latent MoE up
     LLM_TENSOR_FFN_ROUTED_NORM,     // kimi-k3: latent MoE norm

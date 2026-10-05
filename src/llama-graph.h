@@ -1334,6 +1334,9 @@ struct llm_graph_context {
 
     llm_graph_input_rs * build_rs_inp() const;
 
+    // Recurrent-only input for hybrid memory contexts (avoids unused attn tensors)
+    llm_graph_input_rs * build_rs_inp_hybrid() const;
+
     ggml_tensor * build_rs(
             llm_graph_input_rs * inp,
             ggml_tensor * s,
