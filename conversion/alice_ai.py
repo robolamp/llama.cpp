@@ -21,9 +21,9 @@ class AliceAIModel(TextModel):
         super().set_gguf_parameters()
         hparams = self.hparams
         self.gguf_writer.add_vocab_size(hparams["vocab_size"])
-        self.gguf_writer.add_expert_count(hparams["num_experts"])
         self.gguf_writer.add_expert_feed_forward_length(hparams["moe_intermediate_size"])
-        self.gguf_writer.add_expert_shared_count(hparams.get("num_shared_experts", 0))
+        self.gguf_writer.add_expert_shared_count(1)
+        self.gguf_writer.add_expert_shared_feed_forward_length(hparams.get("shared_expert_intermediate_size", hparams["moe_intermediate_size"]))
         self.gguf_writer.add_expert_weights_scale(1.0)
         self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SIGMOID)
         self.gguf_writer.add_rope_dimension_count(
@@ -52,8 +52,6 @@ class AliceAIModel(TextModel):
         # Recurrent layer mask: true = linear_attention (KDA), false = full_attention
         if (layer_types := self.hparams.get("layer_types")) is not None:
             self.gguf_writer.add_recurrent_layers([t == "linear_attention" for t in layer_types])
-
-    _experts: list[dict[str, Tensor]] | None = None
 
     # Zero-centered norms: add 1.0 to the weight
     ZERO_CENTERED = (
@@ -91,44 +89,6 @@ class AliceAIModel(TextModel):
         n_embd = self.hparams["hidden_size"]
         n_experts = self.hparams.get("num_experts", 0)
 
-        # --- MoE experts: gate_up_proj [E, 2*inter, hidden] -> gate + up ---
-        if name.endswith("mlp.experts.gate_up_proj.weight"):
-            assert bid is not None
-            if self._experts is None:
-                self._experts = [{} for _ in range(self.block_count)]
-            self._experts[bid][name] = data_torch
-            if len(self._experts[bid]) >= n_experts:
-                gate = self._experts[bid].pop(name)
-                inter = gate.shape[1] // 2
-                gate_part = gate[:, :inter, :]
-                up_part = gate[:, inter:, :]
-                yield from super().modify_tensors(
-                    gate_part,
-                    self.format_tensor_name(gguf.MODEL_TENSOR.FFN_GATE_UP_EXP, bid),
-                    bid,
-                )
-                yield from super().modify_tensors(
-                    up_part,
-                    self.format_tensor_name(gguf.MODEL_TENSOR.FFN_UP_EXP, bid),
-                    bid,
-                )
-            return
-
-        # --- MoE experts: down_proj [E, hidden, inter] -> down ---
-        if name.endswith("mlp.experts.down_proj.weight"):
-            assert bid is not None
-            if self._experts is None:
-                self._experts = [{} for _ in range(self.block_count)]
-            self._experts[bid][name] = data_torch
-            if len(self._experts[bid]) >= n_experts:
-                down = self._experts[bid].pop(name)
-                yield from super().modify_tensors(
-                    down,
-                    self.format_tensor_name(gguf.MODEL_TENSOR.FFN_DOWN_EXP, bid),
-                    bid,
-                )
-            return
-
         # --- Shared expert: gate_proj, up_proj, down_proj ---
         if name.endswith("mlp.shared_expert.gate_proj.weight"):
             yield from super().modify_tensors(
@@ -159,15 +119,6 @@ class AliceAIModel(TextModel):
             yield from super().modify_tensors(
                 data_torch,
                 self.format_tensor_name(gguf.MODEL_TENSOR.FFN_GATE_INP_SHEXP, bid),
-                bid,
-            )
-            return
-
-        # --- e_score_correction_bias: 1-D buffer per layer -> FFN_EXP_PROBS_B ---
-        if name.endswith("mlp.gate.e_score_correction.bias") or name.endswith("mlp.gate.e_score_correction_bias"):
-            yield from super().modify_tensors(
-                data_torch,
-                self.format_tensor_name(gguf.MODEL_TENSOR.FFN_EXP_PROBS_B, bid),
                 bid,
             )
             return
@@ -261,9 +212,4 @@ class AliceAIModel(TextModel):
 
         yield from super().modify_tensors(data_torch, name, bid)
 
-    def prepare_tensors(self):
-        super().prepare_tensors()
-        if self._experts is not None:
-            leftover = [k for d in self._experts for k in d.keys()]
-            if leftover:
-                raise ValueError(f"Unprocessed experts: {leftover}")
+

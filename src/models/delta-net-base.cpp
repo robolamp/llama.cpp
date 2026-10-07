@@ -48,6 +48,7 @@ std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_ne
     q = ggml_scale(ctx0, q, scale);
 
     cb(q, "q_in", il);
+    cb(q, "kda_q_l2", il); // q_l2_scaled = normalize(Q) * head_k_dim**-0.5 (chunking path)
     cb(k, "k_in", il);
     cb(v, "v_in", il);
     cb(b, "b_in", il);
@@ -82,12 +83,30 @@ std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_ne
     v   = ggml_reshape_4d(ctx0, v,   S_v, CS, n_chunks, H_v * n_seqs);
     v_b = ggml_reshape_4d(ctx0, v_b, S_v, CS, n_chunks, H_v * n_seqs);
 
-    g = ggml_reshape_4d(ctx0, g, g->ne[0], CS, n_chunks, H_v * n_seqs);
+    g = ggml_reshape_4d(ctx0, g, g->ne[0], CS, n_chunks, kda ? H_k * n_seqs : H_v * n_seqs);
     b = ggml_reshape_4d(ctx0, b, 1,        CS, n_chunks, H_v * n_seqs);
 
     // [CS, g_0, n_chunks, H_v * n_seqs]
     // TODO: extend ggml_cumsum with axis parameter to avoid transpose
-    ggml_tensor * g_cs = ggml_cumsum(ctx0, ggml_cont(ctx0, ggml_transpose(ctx0, g)));
+    ggml_tensor * g_cs;
+    if (kda) {
+        // KDA: g is [S_k, CS, n_chunks, H_k*n_seqs].
+        // For KDA, gate values differ per (head_k_dim, n_k_heads) pair,
+        // so cumsum must be over the token (CS) dimension for each pair.
+        // Transpose to [CS, S_k, n_chunks, H_k*n_seqs], cumsum over CS (ne0),
+        // then reshape to [CS, 1, S_k, CHB] for downstream code.
+        ggml_tensor * g_t = ggml_permute(ctx0, g, 1, 0, 2, 3); // [CS, S_k, n_chunks, H_k*n_seqs]
+        g_cs = ggml_cumsum(ctx0, ggml_cont(ctx0, g_t));
+        // g_cs now has shape [CS, S_k, n_chunks, H_k*n_seqs]
+        // Reshape to [CS, 1, S_k, CHB] for downstream code
+        g_cs = ggml_reshape_4d(ctx0, g_cs, CS, 1, S_k, n_chunks * H_k * n_seqs);
+    } else {
+        // GDA: g is [1, CS, n_chunks, H_v*n_seqs].
+        // Transpose to [CS, 1, n_chunks, H_v*n_seqs], cumsum over last dim (H_v*n_seqs).
+        // For GDA, gate values are identical across all head dimensions,
+        // so cumsum over any dimension gives the same result.
+        g_cs = ggml_cumsum(ctx0, ggml_cont(ctx0, ggml_transpose(ctx0, g)));
+    }
     cb(g_cs, "g_cs", il);
 
     ggml_tensor * kb = nullptr;
@@ -102,7 +121,9 @@ std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_ne
 
         // decay_mask [chunk_size,chunk_size,S_k,CHB]
         ggml_tensor * decay_mask;
-        decay_mask = ggml_sub(ctx0, g_cs_j, g_cs_i);
+        // g_cs_i[t',t,d,h] = g_cs[t',0,d,h], g_cs_j[t',t,d,h] = g_cs[t,0,d,h]
+        // decay = g_cs_i - g_cs_j = g_cs[t'] - g_cs[t] = sum_{i=t+1}^{t'} gate[i]
+        decay_mask = ggml_sub(ctx0, g_cs_i, g_cs_j);
         decay_mask = ggml_tri(ctx0, decay_mask, GGML_TRI_TYPE_LOWER_DIAG);
         decay_mask = ggml_exp(ctx0, decay_mask);
         cb(decay_mask, "decay_mask", il);

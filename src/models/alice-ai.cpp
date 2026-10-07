@@ -32,6 +32,10 @@ void llama_model_alice_ai::load_arch_hparams(llama_model_loader & ml) {
 
     ml.get_key_or_arr(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp_arr, hparams.n_layer_all);
     ml.get_key(LLM_KV_EXPERT_SHARED_COUNT,        hparams.n_expert_shared);
+    ml.get_key(LLM_KV_EXPERT_SHARED_FEED_FORWARD_LENGTH, hparams.n_ff_shexp, false);
+    if (hparams.n_ff_shexp == 0) {
+        hparams.n_ff_shexp = hparams.n_ff_exp() * std::max(1u, hparams.n_expert_shared);
+    }
     ml.get_key(LLM_KV_EXPERT_WEIGHTS_SCALE,       hparams.expert_weights_scale, false);
     ml.get_key(LLM_KV_EXPERT_WEIGHTS_NORM,        hparams.expert_weights_norm, false);
     ml.get_key(LLM_KV_EXPERT_GATING_FUNC,         hparams.expert_gating_func);
@@ -249,7 +253,7 @@ void llama_model_alice_ai::load_arch_tensors(llama_model_loader & ml) {
 
         // MoE tensors (all layers)
         layer.ffn_gate_inp = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP, nullptr, i), {n_embd, n_expert}, 0);
-        layer.ffn_exp_probs_b = create_tensor(tn(LLM_TENSOR_FFN_EXP_PROBS_B, "weight", i), {n_expert}, 0);
+        layer.ffn_exp_probs_b = create_tensor(tn(LLM_TENSOR_FFN_EXP_PROBS_B, i), {n_expert}, 0);
 
         // fused gate_up_exps: GGUF shape [hidden, 2*inter, E]
         layer.ffn_gate_up_exps = create_tensor(tn(LLM_TENSOR_FFN_GATE_UP_EXPS, nullptr, i), {n_embd, n_ff_exp * 2, n_expert}, 0);
@@ -257,9 +261,7 @@ void llama_model_alice_ai::load_arch_tensors(llama_model_loader & ml) {
         layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, nullptr, i), {n_ff_exp, n_embd, n_expert}, 0);
 
         // Shared expert (may be absent if n_expert_shared == 0)
-        const int64_t n_ff_shexp = hparams.n_expert_shared > 0
-            ? hparams.n_expert_shared * n_ff_exp
-            : n_ff_exp;
+        const int64_t n_ff_shexp = hparams.n_ff_shexp;
         layer.ffn_gate_inp_shexp = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP_SHEXP, "weight", i), {n_embd, 1}, TENSOR_NOT_REQUIRED);
         layer.ffn_gate_shexp = create_tensor(tn(LLM_TENSOR_FFN_GATE_SHEXP, "weight", i), {n_embd, n_ff_shexp}, TENSOR_NOT_REQUIRED);
         layer.ffn_up_shexp   = create_tensor(tn(LLM_TENSOR_FFN_UP_SHEXP,   "weight", i), {n_embd, n_ff_shexp}, TENSOR_NOT_REQUIRED);
@@ -379,6 +381,7 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
 
             // RMSNorm each source with shared res_norm weight
             ggml_tensor * normed = ggml_rms_norm(ctx0, sources, eps);
+            normed = ggml_mul(ctx0, normed, layer.attn_norm_2);
             cb(normed, "attn_res_normed", il);
 
             // res_proj: scalar weights for each source
@@ -441,6 +444,7 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
                     qkv * ((d_conv - 1) * d_inner) * ggml_element_size(conv_state_all));
 
                 ggml_tensor * x_proj = proj_w ? ggml_mul_mat(ctx0, proj_w, cur) : cur;
+                cb(x_proj, qkv==0?"kda_q_proj":qkv==1?"kda_k_proj":"kda_v_proj", il);
                 ggml_tensor * x_3d = ggml_reshape_3d(ctx0, x_proj, d_inner, n_seq_tokens, n_seqs);
                 ggml_tensor * conv_x = ggml_concat(ctx0, conv_state_x, ggml_transpose(ctx0, x_3d), 0);
 
@@ -458,6 +462,7 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
                 ggml_tensor * Xcur = ggml_ssm_conv(ctx0, conv_x, conv_weight);
                 Xcur = ggml_reshape_2d(ctx0, Xcur, d_inner, n_tokens);
                 Xcur = ggml_silu(ctx0, Xcur);
+                cb(Xcur, qkv==0?"kda_q_conv":qkv==1?"kda_k_conv":"kda_v_conv", il);
 
                 return ggml_reshape_4d(ctx0, Xcur, head_k_dim, n_k_heads, n_seq_tokens, n_seqs);
             };
@@ -465,14 +470,11 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
             ggml_tensor * Qcur = conv1d(0, layer.wq, layer.ssm_q_conv);
             ggml_tensor * Kcur = conv1d(1, layer.wk, layer.ssm_k_conv);
             ggml_tensor * Vcur = conv1d(2, layer.wv, layer.ssm_v_conv);
-            cb(Qcur, "kda_q_conv", il);
-            cb(Kcur, "kda_k_conv", il);
-            cb(Vcur, "kda_v_conv", il);
 
               // Gate computation: g = -exp(a_log_bias) * softplus(alpha + dt_bias)
               ggml_tensor * f_a = ggml_mul_mat(ctx0, layer.ssm_f_a, cur);
               ggml_tensor * g1 = ggml_mul_mat(ctx0, layer.ssm_f_b, f_a);
-              cb(g1, "g1 f_b(f_a(cur))", il);
+              cb(g1, "kda_alpha", il);
 
                 // ssm_dt_b is stored as [d_inner] = [head_k_dim * n_k_heads].
                 // HF interprets it as [num_k_heads, head_k_dim] (row-major in h,d).
@@ -486,18 +488,18 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
                 // gate[d, h, t] = softplus(g1[d,h,t] + dt_broadcast[d,h]) * A[h]
                 // = softplus(alpha[0,t,h,d] + dt_bias_hf[h,d]) * A[h]
                 // = gate_hf[0, t, h, d]
-              ggml_tensor * dt_bias = ggml_reshape_2d(ctx0, layer.ssm_dt_b, n_k_heads, head_k_dim);
-              dt_bias = ggml_permute(ctx0, dt_bias, 1, 0, 2, 3); // [head_k_dim, n_k_heads]
-              dt_bias = ggml_cont(ctx0, dt_bias);               // make contiguous
-              dt_bias = ggml_reshape_1d(ctx0, dt_bias, head_k_dim * n_k_heads);
+              // ssm_dt_b is already h-major flat [h*head_k_dim + d], matching the
+              // alpha row index (i = h*head_k_dim + d). A plain reshape_1d keeps
+              // that ordering so the broadcast add lands dt_bias on the right
+              // elements. (The old reshape_2d+permute made it d-major, mismatching.)
+              ggml_tensor * dt_bias = ggml_reshape_1d(ctx0, layer.ssm_dt_b, head_k_dim * n_k_heads);
               g1 = ggml_add(ctx0, g1, dt_bias);
               g1 = ggml_softplus(ctx0, g1);
-              g1 = ggml_reshape_3d(ctx0, g1, n_k_heads, head_k_dim, n_tokens);
+              g1 = ggml_reshape_3d(ctx0, g1, head_k_dim, n_k_heads, n_tokens);
 
               // Permute g1 from [n_k_heads, head_k_dim, n_tokens] to
               // [head_k_dim, n_k_heads, n_tokens] so subsequent reshapes
               // preserve the (h,d) element ordering for the chunking path.
-              g1 = ggml_permute(ctx0, g1, 1, 0, 2, 3);
               g1 = ggml_cont(ctx0, g1);
 
              // A_log: shape [n_k_heads], broadcast to [head_k_dim, n_k_heads, n_tokens]
@@ -508,19 +510,25 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
              g1 = ggml_mul(ctx0, g1, A);
              cb(g1, "kda_g1", il);
 
-              g1 = ggml_reshape_4d(ctx0, g1, head_k_dim, n_k_heads, n_seq_tokens, n_seqs);
+               g1 = ggml_reshape_4d(ctx0, g1, head_k_dim, n_k_heads, n_seq_tokens, n_seqs);
 
             // Beta mixing coefficient (b_proj -> ssm_b.weight in GGUF)
             ggml_tensor * beta = ggml_mul_mat(ctx0, layer.wb, cur);
             beta = ggml_reshape_4d(ctx0, beta, 1, n_k_heads, n_seq_tokens, n_seqs);
             cb(beta, "kda_beta", il);
+            cb(beta, "kda_beta_raw", il);
             beta = ggml_sigmoid(ctx0, beta);
+            cb(beta, "kda_beta", il);
             // kda_allow_negative_eigenvalues=false -> don't multiply by 2
 
             // L2-normalize Q and K
             ggml_tensor * cur_3d = ggml_reshape_3d(ctx0, cur, cur->ne[0], n_seq_tokens, n_seqs);
             Qcur = build_gdn_l2_norm(ctx0, Qcur, eps);
             Kcur = build_gdn_l2_norm(ctx0, Kcur, eps);
+            // k_l2 checkpoint: reference k_l2 = normalize(K), matches post-L2 Kcur exactly.
+            cb(Kcur, "kda_k_l2", il);
+            // q_l2_scaled = normalize(Q) * head_k_dim**-0.5; the scale is applied inside
+            // build_delta_net (ggml_scale), so cb() the scaled Q there as "kda_q_l2".
 
             // KDA recurrence
             ggml_tensor * ssm_states_all = mctx_cur->get_s_l(il);
@@ -538,7 +546,7 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
 
             ggml_tensor * output = ggml_cont(ctx0, attn_out.first);
             ggml_tensor * new_state = attn_out.second;
-            cb(output, "attn_output", il);
+            cb(attn_out.first, "kda_delta_out", il);
             cb(new_state, "new_state", il);
 
             // Update recurrent states
@@ -551,27 +559,33 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
             ggml_tensor * cur_2d = ggml_reshape_2d(ctx0, cur_3d, cur_3d->ne[0], n_seq_tokens * n_seqs);
             ggml_tensor * g_a = ggml_mul_mat(ctx0, layer.ssm_g_a, cur_2d);
             ggml_tensor * g2 = ggml_mul_mat(ctx0, layer.ssm_g_b, g_a);
-            cb(g2, "g2 g_b(g_a(cur_2d))", il);
+            cb(g2, "kda_gate_raw", il);
             g2 = ggml_reshape_3d(ctx0, g2, head_v_dim, n_k_heads, n_seq_tokens * n_seqs);
 
+             // output is already [head_v_dim, n_k_heads, n_tokens*n_seqs] with
+             // head_v_dim as ne0. build_norm (RMS) normalizes over ne0 per column,
+             // matching HF's o_norm over the last dim of [batch, seq, num_v_heads, head_v_dim].
+             // Keep that ordering; do NOT permute (permuting scrambles the column
+             // order so the gate multiply below lands on wrong elements).
              ggml_tensor * attn_out_3d = ggml_reshape_3d(ctx0, output, head_v_dim, n_k_heads, n_seq_tokens * n_seqs);
-             // o_norm RMSNorm is over head_v_dim (last dim in HF: [batch, seq, num_v_heads, head_v_dim])
-             // attn_out_3d is [head_v_dim, n_k_heads, n_tokens*n_seqs], need head_v_dim last for RMSNorm
-             attn_out_3d = ggml_permute(ctx0, attn_out_3d, 1, 2, 0, 3); // [n_k_heads, n_tokens*n_seqs, head_v_dim, 1]
-             attn_out_3d = ggml_cont(ctx0, attn_out_3d); // make contiguous
-             // Reshape to [n_k_heads * n_tokens * n_seqs, head_v_dim] so weight [head_v_dim] can broadcast
-             attn_out_3d = ggml_reshape_2d(ctx0, attn_out_3d, head_v_dim, n_k_heads * n_seq_tokens * n_seqs);
-             ggml_tensor * normed = build_norm(attn_out_3d, layer.ssm_o_norm, nullptr, LLM_NORM_RMS, il);
-             cb(normed, "kda_normed", il);
+             ggml_tensor * attn_out_2d = ggml_reshape_2d(ctx0, attn_out_3d, head_v_dim, n_k_heads * n_seq_tokens * n_seqs);
+              ggml_tensor * normed = build_norm(attn_out_2d, layer.ssm_o_norm, nullptr, LLM_NORM_RMS, il);
+              ggml_tensor * o_norm = ggml_reshape_4d(ctx0, normed, head_v_dim, n_k_heads, n_seq_tokens, n_seqs);
+               cb(normed, "kda_normed", il);
+               cb(o_norm, "kda_o_norm", il);
              ggml_tensor * gate = ggml_sigmoid(ctx0, g2);
              cb(gate, "kda_gate", il);
              gate = ggml_reshape_2d(ctx0, gate, head_v_dim, n_k_heads * n_seq_tokens * n_seqs);
-             ggml_tensor * gated = ggml_mul(ctx0, normed, gate);
+              ggml_tensor * gated = ggml_mul(ctx0, normed, gate);
+              // View as [head_v_dim, n_k_heads, n_seq_tokens, n_seqs] so the
+              // checkpoint matches HF's [batch, seq, num_v_heads, head_v_dim].
+              gated = ggml_reshape_4d(ctx0, gated, head_v_dim, n_k_heads, n_seq_tokens, n_seqs);
+              cb(gated, "kda_gated", il);
 
-            // Output projection
+             // Output projection
             gated = ggml_cont_2d(ctx0, gated, d_inner, n_tokens);
             cur = ggml_mul_mat(ctx0, layer.wo, gated);
-            cb(cur, "kda_out", il);
+             cb(cur, "attn_output", il);
 
         } else if (is_attn_layer) {
             // === Full attention layer ===
@@ -676,6 +690,7 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
 
             // RMSNorm each source with shared res_norm weight (plain)
             ggml_tensor * normed = ggml_rms_norm(ctx0, sources, eps);
+            normed = ggml_mul(ctx0, normed, layer.ffn_post_norm_2);
             cb(normed, "ffn_res_normed", il);
 
             // res_proj: scalar weights
@@ -726,7 +741,7 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
             n_expert, n_expert_used,
             LLM_FFN_SILU, true,
             hparams.expert_weights_scale,
-            LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
+            (llama_expert_gating_func_type) hparams.expert_gating_func, il,
             logits, layer.ffn_gate_up_exps,
             layer.ffn_up_exps_s,
             layer.ffn_gate_exps_s,
@@ -771,6 +786,7 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
             : completed_stack;
 
         ggml_tensor * normed = ggml_rms_norm(ctx0, sources, eps);
+        normed = ggml_mul(ctx0, normed, model.output_res_norm);
         cb(normed, "final_res_normed", -1);
 
         ggml_tensor * scores = ggml_mul(ctx0, normed, model.output_res_score);
