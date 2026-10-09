@@ -290,7 +290,6 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
 
     ggml_tensor * inp_pos = build_inp_pos();
     ggml_tensor * inp_out_ids = build_inp_out_ids();
-    (void)inp_out_ids;
 
     const int64_t n_head = hparams.n_head();
     const int64_t head_k_dim = hparams.n_embd_head_kda;
@@ -677,49 +676,44 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
 
         // MoE input: mix completed + [partial] via mlp_res_score + mlp_res_norm
         ggml_tensor * moe_mixed;
-        if (il == 0) {
-            // Layer 0: no mlp mixing yet (partial is the only block)
-            moe_mixed = partial;
-        } else {
-            // Mix completed + [partial]
-            ggml_tensor * sources = partial
-                ? (completed_stack
-                    ? ggml_concat(ctx0, completed_stack, ggml_reshape_3d(ctx0, partial, n_embd, 1, n_tokens), 1)
-                    : ggml_reshape_3d(ctx0, partial, n_embd, 1, n_tokens))
-                : completed_stack;
+        // Mix completed + [partial]
+        ggml_tensor * sources = partial
+            ? (completed_stack
+                ? ggml_concat(ctx0, completed_stack, ggml_reshape_3d(ctx0, partial, n_embd, 1, n_tokens), 1)
+                : ggml_reshape_3d(ctx0, partial, n_embd, 1, n_tokens))
+            : completed_stack;
 
-            // RMSNorm each source with shared res_norm weight (plain)
-            ggml_tensor * normed = ggml_rms_norm(ctx0, sources, eps);
-            normed = ggml_mul(ctx0, normed, layer.ffn_post_norm_2);
-            cb(normed, "ffn_res_normed", il);
+        // RMSNorm each source with shared res_norm weight (plain)
+        ggml_tensor * normed = ggml_rms_norm(ctx0, sources, eps);
+        normed = ggml_mul(ctx0, normed, layer.ffn_post_norm_2);
+        cb(normed, "ffn_res_normed", il);
 
-            // res_proj: scalar weights
-            ggml_tensor * scores = ggml_mul(ctx0, normed, layer.ffn_res_score);
-            scores = ggml_sum_rows(ctx0, scores);
-            cb(scores, "ffn_res_scores", il);
+        // res_proj: scalar weights
+        ggml_tensor * scores = ggml_mul(ctx0, normed, layer.ffn_res_score);
+        scores = ggml_sum_rows(ctx0, scores);
+        cb(scores, "ffn_res_scores", il);
 
-            scores = ggml_reshape_2d(ctx0, scores, ggml_nrows(scores) / n_tokens, n_tokens);
-            ggml_tensor * probs = ggml_soft_max(ctx0, scores);
-            cb(probs, "ffn_res_probs", il);
+        scores = ggml_reshape_2d(ctx0, scores, ggml_nrows(scores) / n_tokens, n_tokens);
+        ggml_tensor * probs = ggml_soft_max(ctx0, scores);
+        cb(probs, "ffn_res_probs", il);
 
-            const int n_completed = (int) probs->ne[0];
-            ggml_tensor * p_src = ggml_cont(ctx0, ggml_view_2d(ctx0, probs, n_completed, n_tokens, probs->nb[1], 0));
-            ggml_tensor * p_part = nullptr;
-            if (partial && n_completed < (int) probs->ne[0]) {
-                p_part = ggml_cont(ctx0, ggml_view_2d(ctx0, probs, 1, n_tokens, probs->nb[1],
-                                                                     probs->nb[0] * n_completed));
-            }
-
-            ggml_tensor * out = ggml_dsv4_hc_pre(ctx0, sources, p_src);
-
-            if (p_part) {
-                ggml_tensor * p_part_3d = ggml_reshape_3d(ctx0, p_part, 1, n_tokens, 1);
-                out = ggml_add(ctx0, out, ggml_mul(ctx0, partial, p_part_3d));
-            }
-
-            moe_mixed = out;
-            cb(moe_mixed, "moe_mixed", il);
+        const int n_completed = (int) probs->ne[0];
+        ggml_tensor * p_src = ggml_cont(ctx0, ggml_view_2d(ctx0, probs, n_completed, n_tokens, probs->nb[1], 0));
+        ggml_tensor * p_part = nullptr;
+        if (partial && n_completed < (int) probs->ne[0]) {
+            p_part = ggml_cont(ctx0, ggml_view_2d(ctx0, probs, 1, n_tokens, probs->nb[1],
+                                                                 probs->nb[0] * n_completed));
         }
+
+        ggml_tensor * out = ggml_dsv4_hc_pre(ctx0, sources, p_src);
+
+        if (p_part) {
+            ggml_tensor * p_part_3d = ggml_reshape_3d(ctx0, p_part, 1, n_tokens, 1);
+            out = ggml_add(ctx0, out, ggml_mul(ctx0, partial, p_part_3d));
+        }
+
+        moe_mixed = out;
+        cb(moe_mixed, "moe_mixed", il);
 
         // Post-attention norm (zero-centered, already subtracted 1.0 on load)
         moe_mixed = build_norm(moe_mixed, layer.ffn_norm, nullptr, LLM_NORM_RMS, il);
@@ -773,6 +767,11 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
         cb(cur, "layer_out", il);
 
         inpL = cur;
+
+        // residual stream (outer `partial`) carries the layer output forward,
+        // so the next layer's mix includes this layer's moe_out (reference:
+        // `partial, _ = layer(...)` -> partial = partial + moe_output).
+        partial = cur;
     }
 
     cur = inpL;
@@ -814,6 +813,11 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
 
         cur = out;
         cb(cur, "attnres_final", -1);
+    }
+
+    // Select only the requested output rows (e.g. last position) before final norm
+    if (inp_out_ids) {
+        cur = ggml_get_rows(ctx0, cur, inp_out_ids);
     }
 
     // Final norm (plain RMSNorm, output_norm)
