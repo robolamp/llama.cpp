@@ -2972,7 +2972,6 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_DOTS3NOTE:
         case LLM_ARCH_NANBEIGE:
         case LLM_ARCH_POCKETTTS:
-        case LLM_ARCH_ALICE_AI:
         // HY_V4 rotates consecutive pairs, matching the reference implementation
         case LLM_ARCH_HY_V4:
             return LLAMA_ROPE_TYPE_NORM;
@@ -3050,6 +3049,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_TALKIE:
         case LLM_ARCH_MELLUM:
         case LLM_ARCH_MAPLE:
+        case LLM_ARCH_ALICE_AI:
         case LLM_ARCH_HRM_TEXT:
             return LLAMA_ROPE_TYPE_NEOX;
 

@@ -205,6 +205,15 @@ uint32_t llama_hparams::n_embd_v_gqa_max() const {
     return val;
 }
 
+uint32_t llama_hparams::n_head_kda() const {
+    // Number of KDA heads. alice_ai carries its own (arriving as
+    // ssm.group_count) and it differs from the attention head count: 32 vs 16.
+    // kimi-linear, kimi-k3 and bailingmoe3 have no separate key and their KDA
+    // head count equals the attention head count, so ssm_n_group == 0 there and
+    // the fallback applies, reproducing the previous behaviour exactly.
+    return ssm_n_group > 0 ? ssm_n_group : n_head();
+}
+
 uint32_t llama_hparams::n_embd_r() const {
     if (wkv_head_size != 0) {
         // for RWKV models
@@ -219,7 +228,7 @@ uint32_t llama_hparams::n_embd_r() const {
     if (n_embd_head_kda != 0) {
         // for Kimi KDA layers
         // Conv state for Q, K, V: 3 * (d_conv - 1) * n_head * head_dim
-        const uint32_t d_inner = n_head() * n_embd_head_kda;  // 32 * 128 = 4096
+        const uint32_t d_inner = n_head_kda() * n_embd_head_kda;  // 32 * 128 = 4096
         return 3 * (ssm_d_conv > 0 ? ssm_d_conv - 1 : 3) * d_inner;
     }
 
@@ -243,7 +252,7 @@ uint32_t llama_hparams::n_embd_s() const {
         // for Kimi KDA layers
         // Full recurrent state: head_dim * head_dim * n_head
         // h tensor shape for delta attention: [head_dim, head_dim, n_head]
-        return n_embd_head_kda * n_embd_head_kda * n_head();  // 128 * 128 * 32 = 524288
+        return n_embd_head_kda * n_embd_head_kda * n_head_kda();  // 128 * 128 * 32 = 524288
     }
 
     if (n_embd_head_la != 0) {

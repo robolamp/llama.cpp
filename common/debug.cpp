@@ -168,7 +168,7 @@ bool common_debug_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
     }
 
     if (matches_filter) {
-        LOG("%s: %24s = (%s) %10s(%s{%s}, %s}) = {%s}\n", __func__, t->name, ggml_type_name(t->type),
+        LOG("ggml_debug: %24s = (%s) %10s(%s{%s}, %s}) = {%s}\n", t->name, ggml_type_name(t->type),
             ggml_op_desc(t), src0->name, common_ggml_ne_string(src0).c_str(), src1 ? src1_str : "",
             common_ggml_ne_string(t).c_str());
     }
@@ -183,7 +183,7 @@ bool common_debug_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
 
     if (!ggml_is_quantized(t->type) && matches_filter) {
         uint8_t * data = is_host ? (uint8_t *) t->data : pimpl->data.data();
-        common_debug_print_tensor(data, t->type, t->ne, t->nb, 3, pimpl->abort_on_nan);
+        common_debug_print_tensor(data, t->type, t->ne, t->nb, 1000000, pimpl->abort_on_nan);
     }
 
     return true;

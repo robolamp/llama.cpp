@@ -4,6 +4,42 @@
 #include "llama-memory-recurrent.h"
 #include "llama-memory-hybrid.h"
 
+static void vm_mark(int id) {
+    FILE * f = fopen("/tmp/vm.log", "a");
+    if (f) { fprintf(f, "M%d\n", id); fflush(f); fclose(f); }
+}
+
+
+static void vm_detail441(struct ggml_tensor * src, int64_t d_conv, int64_t d_inner, int64_t n_seqs,
+                         int qkv, int il, int64_t n_embd_r) {
+    FILE * f = fopen("/tmp/vm441.log", "a");
+    if (f) {
+        size_t esize  = ggml_element_size(src);
+        int64_t ne0   = d_conv - 1;
+        int64_t ne1   = d_inner;
+        int64_t ne2   = n_seqs;
+        size_t data_size = ggml_row_size(src->type, ne0) * (size_t) ne1 * (size_t) ne2;
+        size_t offset    = (size_t)(qkv * (d_conv - 1) * d_inner) * esize;
+        struct ggml_tensor * base = src->view_src ? src->view_src : src;
+        size_t base_offs = src->view_src ? (size_t) src->view_offs : 0;
+        size_t adj_offs  = offset + base_offs;
+        size_t base_nbytes = ggml_nbytes(base);
+        int fits = data_size + adj_offs <= base_nbytes;
+        fprintf(f, "D441 src=%s type=%d ne=%lld,%lld,%lld,%lld nbytes=%zu view_src=%p view_offs=%zu "
+                   "base=%s base_nbytes=%zu esize=%zu d_conv=%lld d_inner=%lld n_seqs=%lld qkv=%d il=%d n_embd_r=%lld "
+                   "view_ne=%lld,%lld,%lld nb1=%zu nb2=%zu off=%zu adj_offs=%zu data_size=%zu total=%zu fits=%d\n",
+                src->name, (int)src->type, (long long)src->ne[0], (long long)src->ne[1],
+                (long long)src->ne[2], (long long)src->ne[3], ggml_nbytes(src), (void*)src->view_src,
+                (size_t)src->view_offs, base->name ? base->name : "(anon)", base_nbytes, esize,
+                (long long)d_conv, (long long)d_inner, (long long)n_seqs, qkv, il, (long long)n_embd_r,
+                (long long)ne0, (long long)ne1, (long long)ne2,
+                (size_t)((d_conv - 1) * esize), (size_t)(n_embd_r * esize), offset, adj_offs,
+                data_size, data_size + adj_offs, fits);
+        fflush(f); fclose(f);
+    }
+}
+
+
 //
 // AliceAI: hybrid KDA (linear) + full-attention layers with MoE.
 // Layer pattern: every 4th layer (layer_idx % 4 == 3) is full attention.
@@ -286,7 +322,8 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
     inpL = build_inp_embd(model.tok_embd);
     cb(inpL, "model.embed_tokens", -1);
 
-    auto * inp_rs = build_rs_inp_hybrid();
+    auto * inp_kv = build_inp_mem_hybrid();
+    auto * inp_rs = inp_kv->get_recr();
 
     ggml_tensor * inp_pos = build_inp_pos();
     ggml_tensor * inp_out_ids = build_inp_out_ids();
@@ -294,7 +331,7 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
     const int64_t n_head = hparams.n_head();
     const int64_t head_k_dim = hparams.n_embd_head_kda;
     const int64_t head_v_dim = head_k_dim;
-    const int64_t n_k_heads = hparams.ssm_n_group;
+    const int64_t n_k_heads = hparams.n_head_kda();
     const int64_t d_conv = hparams.ssm_d_conv;
     const int64_t d_inner = head_k_dim * n_k_heads;
     const int64_t n_seqs = ubatch.n_seqs;
@@ -437,6 +474,8 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
 
             // Causal conv1d over Q, K, V
             auto conv1d = [&](int qkv, ggml_tensor * proj_w, ggml_tensor * conv_w) {
+                vm_mark(441);
+                vm_detail441(conv_state_all, d_conv, d_inner, n_seqs, qkv, il, hparams.n_embd_r());
                 ggml_tensor * conv_state_x = ggml_view_3d(ctx0, conv_state_all, d_conv - 1, d_inner, n_seqs,
                     (d_conv - 1) * ggml_element_size(conv_state_all),
                     hparams.n_embd_r() * ggml_element_size(conv_state_all),
@@ -448,8 +487,10 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
                 ggml_tensor * conv_x = ggml_concat(ctx0, conv_state_x, ggml_transpose(ctx0, x_3d), 0);
 
                 // Save last (d_conv-1) columns back to conv state
+                vm_mark(452);
                 ggml_tensor * last_conv_x = ggml_view_3d(ctx0, conv_x, d_conv - 1, d_inner, n_seqs,
                     conv_x->nb[1], conv_x->nb[2], n_seq_tokens * conv_x->nb[0]);
+                vm_mark(456);
                 ggml_build_forward_expand(gf,
                     ggml_cpy(ctx0, last_conv_x,
                         ggml_view_3d(ctx0, conv_states_all, d_conv - 1, d_inner, n_seqs,
@@ -591,25 +632,30 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
 
             // Gate folded inside q_proj: q_proj output = [query, gate]
             ggml_tensor * QGcur = ggml_mul_mat(ctx0, layer.wq, cur);
+            cb(QGcur, "QGcur", il);
             // View as [head_dim, n_head, 2, n_tokens], split into q and gate
             // wq shape is [n_embd, 2*n_head*head_dim], so mul_mat output is [2*n_head*head_dim, n_tokens]
             const int64_t attn_head_dim = layer.wq->ne[1] / (2 * n_head);
-            QGcur = ggml_reshape_4d(ctx0, QGcur, attn_head_dim, n_head, 2, n_tokens);
-
-            ggml_tensor * Qcur = ggml_view_4d(ctx0, QGcur, attn_head_dim, n_head, n_tokens, 1,
-                                                QGcur->nb[1], QGcur->nb[2], QGcur->nb[3], 0);
+            // Query-only strided view: [attn_head_dim, n_head, n_tokens], skipping the per-head gate half
+                vm_mark(600);
+            ggml_tensor * Qcur = ggml_view_3d(ctx0, QGcur, attn_head_dim, n_head, n_tokens,
+                    ggml_row_size(QGcur->type, 2 * attn_head_dim),  // nb1: stride between heads (query + gate)
+                    ggml_row_size(QGcur->type, 2 * attn_head_dim * n_head),  // nb2: stride between tokens
+                    0);
             cb(Qcur, "Qcur_view", il);
-
-            ggml_tensor * gate = ggml_view_4d(ctx0, QGcur, attn_head_dim, n_head, n_tokens, 1,
-                                                QGcur->nb[1], QGcur->nb[2], QGcur->nb[3],
-                                                attn_head_dim * ggml_element_size(QGcur));
+            // Gate-only strided view: [attn_head_dim, n_head, n_tokens]
+                vm_mark(606);
+            ggml_tensor * gate = ggml_view_3d(ctx0, QGcur, attn_head_dim, n_head, n_tokens,
+                    ggml_row_size(QGcur->type, 2 * attn_head_dim),
+                    ggml_row_size(QGcur->type, 2 * attn_head_dim * n_head),
+                    attn_head_dim * ggml_element_size(QGcur));
             cb(gate, "gate", il);
 
             // K, V projections
             ggml_tensor * Kcur = ggml_mul_mat(ctx0, layer.wk, cur);
             ggml_tensor * Vcur = ggml_mul_mat(ctx0, layer.wv, cur);
-            cb(Kcur, "Kcur", il);
-            cb(Vcur, "Vcur", il);
+            cb(Kcur, "Kcur_proj", il);
+            cb(Vcur, "Vcur_proj", il);
 
             // Derive attention head_dim from weight tensor shapes
             // wk shape is [n_embd, n_head_kv * head_dim], so mul_mat output is [n_head_kv * head_dim, n_tokens]
@@ -625,27 +671,32 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
             Kcur = build_norm(Kcur, layer.attn_k_norm, nullptr, LLM_NORM_RMS, il);
             cb(Kcur, "Kcur_normed", il);
 
-            // Partial rotary: rotary_dim = head_dim * 0.25
-            // rope_theta = 1e6
-            const int64_t rotary_dim = attn_head_dim / 4;  // 16
-            const float rope_freq_base = 1e6f;
+            // Partial rotary: use rope params from base graph
+            const int64_t rotary_dim = n_rot;
 
+            fprintf(stderr, "ROPE_DEBUG rotary_dim=%lld rope_type=%d n_ctx_orig=%lld freq_base=%.6f freq_scale=%.6f ext_factor=%.6f attn_factor=%.6f beta_fast=%.6f beta_slow=%.6f\n",
+                    (long long)rotary_dim, (int)rope_type, (long long)n_ctx_orig,
+                    (double)freq_base, (double)freq_scale, (double)ext_factor,
+                    (double)attn_factor, (double)beta_fast, (double)beta_slow);
+
+            Qcur = ggml_cont(ctx0, Qcur);
             Qcur = ggml_rope_ext(ctx0, Qcur, inp_pos, nullptr,
-                    rotary_dim, 0, 0, rope_freq_base, 1.0f,
-                    1.0f, 1.0f, 0.0f, 0.0f);
+                    rotary_dim, rope_type, n_ctx_orig, freq_base, freq_scale,
+                    ext_factor, attn_factor, beta_fast, beta_slow);
 
+            Kcur = ggml_cont(ctx0, Kcur);
             Kcur = ggml_rope_ext(ctx0, Kcur, inp_pos, nullptr,
-                    rotary_dim, 0, 0, rope_freq_base, 1.0f,
-                    1.0f, 1.0f, 0.0f, 0.0f);
+                    rotary_dim, rope_type, n_ctx_orig, freq_base, freq_scale,
+                    ext_factor, attn_factor, beta_fast, beta_slow);
 
-            cb(Qcur, "Qcur", il);
-            cb(Kcur, "Kcur", il);
-            cb(Vcur, "Vcur", il);
+            cb(Qcur, "Qcur_roped", il);
+            cb(Kcur, "Kcur_roped", il);
+            cb(Vcur, "Vcur_reshaped", il);
 
-             // Attention scale
-             const float kq_scale = 1.0f / sqrtf((float) head_k_dim);
+              // Attention scale
+              const float kq_scale = 1.0f / sqrtf((float) n_embd_head_k);
 
-             auto * inp_attn = build_attn_inp_no_cache();
+              auto * inp_attn = inp_kv->get_attn();
 
             cur = build_attn(inp_attn,
                         nullptr, nullptr, nullptr,
@@ -653,7 +704,8 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
             cb(cur, "attn_pregate", il);
 
             // Apply sigmoid gate
-            gate = ggml_cont_2d(ctx0, gate, attn_head_dim * n_head, n_tokens);
+            gate = ggml_cont_3d(ctx0, gate, attn_head_dim, n_head, n_tokens);
+            gate = ggml_reshape_2d(ctx0, gate, attn_head_dim * n_head, n_tokens);
             gate = ggml_sigmoid(ctx0, gate);
             cb(gate, "gate_sigmoid", il);
 
@@ -662,7 +714,7 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
 
             // Output projection
             cur = ggml_mul_mat(ctx0, layer.wo, cur);
-            cb(cur, "attn_output", il);
+            cb(cur, "attn_block_out", il);
         } else {
             // Layer has neither SSM nor attention tensors (missing/empty layer).
             // Pass through: cur remains unchanged as the layer output.
