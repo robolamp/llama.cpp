@@ -421,8 +421,7 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
             cb(normed, "attn_res_normed", il);
 
             // res_proj: scalar weights for each source
-            ggml_tensor * scores = ggml_mul(ctx0, normed, layer.attn_res_score);
-            scores = ggml_sum_rows(ctx0, scores);
+            ggml_tensor * scores = ggml_mul_mat(ctx0, layer.attn_res_score, normed);
             cb(scores, "attn_res_scores", il);
 
             // Softmax over depth axis
@@ -659,8 +658,8 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
 
             // Derive attention head_dim from weight tensor shapes
             // wk shape is [n_embd, n_head_kv * head_dim], so mul_mat output is [n_head_kv * head_dim, n_tokens]
-            const int64_t attn_k_head_dim = layer.wk->ne[0] / n_head_kv;
-            const int64_t attn_v_head_dim = layer.wv->ne[0] / n_head_kv;
+            const int64_t attn_k_head_dim = layer.wk->ne[1] / n_head_kv;
+            const int64_t attn_v_head_dim = layer.wv->ne[1] / n_head_kv;
             Kcur = ggml_reshape_3d(ctx0, Kcur, attn_k_head_dim, n_head_kv, n_tokens);
             Vcur = ggml_reshape_3d(ctx0, Vcur, attn_v_head_dim, n_head_kv, n_tokens);
 
@@ -673,11 +672,6 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
 
             // Partial rotary: use rope params from base graph
             const int64_t rotary_dim = n_rot;
-
-            fprintf(stderr, "ROPE_DEBUG rotary_dim=%lld rope_type=%d n_ctx_orig=%lld freq_base=%.6f freq_scale=%.6f ext_factor=%.6f attn_factor=%.6f beta_fast=%.6f beta_slow=%.6f\n",
-                    (long long)rotary_dim, (int)rope_type, (long long)n_ctx_orig,
-                    (double)freq_base, (double)freq_scale, (double)ext_factor,
-                    (double)attn_factor, (double)beta_fast, (double)beta_slow);
 
             Qcur = ggml_cont(ctx0, Qcur);
             Qcur = ggml_rope_ext(ctx0, Qcur, inp_pos, nullptr,
@@ -741,8 +735,7 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
         cb(normed, "ffn_res_normed", il);
 
         // res_proj: scalar weights
-        ggml_tensor * scores = ggml_mul(ctx0, normed, layer.ffn_res_score);
-        scores = ggml_sum_rows(ctx0, scores);
+        ggml_tensor * scores = ggml_mul_mat(ctx0, layer.ffn_res_score, normed);
         cb(scores, "ffn_res_scores", il);
 
         scores = ggml_reshape_2d(ctx0, scores, ggml_nrows(scores) / n_tokens, n_tokens);
@@ -840,8 +833,7 @@ llama_model_alice_ai::graph::graph(const llama_model & model, const llm_graph_pa
         normed = ggml_mul(ctx0, normed, model.output_res_norm);
         cb(normed, "final_res_normed", -1);
 
-        ggml_tensor * scores = ggml_mul(ctx0, normed, model.output_res_score);
-        scores = ggml_sum_rows(ctx0, scores);
+        ggml_tensor * scores = ggml_mul_mat(ctx0, model.output_res_score, normed);
         cb(scores, "final_res_scores", -1);
 
         scores = ggml_reshape_2d(ctx0, scores, ggml_nrows(scores) / n_tokens, n_tokens);
