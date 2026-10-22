@@ -1828,6 +1828,11 @@ struct llama_vocab::impl {
 
     // tokenizer flags
     bool add_space_prefix           = false;
+    // when true, SPM space prepending follows HF Metaspace prepend_scheme=first:
+    // prepend only to the first fragment and only when text does not already
+    // start with a space; never after a special token. default false keeps
+    // legacy behaviour for models without the key.
+    bool spm_prepend_hf = false;
     bool add_bos                    = false;
     bool add_eos                    = false;
     bool add_sep                    = false;
@@ -2449,7 +2454,8 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
             pre_type = LLAMA_VOCAB_PRE_TYPE_DEFAULT;
         }
 
-        ml.get_key(LLM_KV_TOKENIZER_ADD_PREFIX,      add_space_prefix,         false);
+        ml.get_key(LLM_KV_TOKENIZER_ADD_PREFIX,           add_space_prefix,            false);
+        ml.get_key(LLM_KV_TOKENIZER_SPM_PREPEND_HF, spm_prepend_hf, false);
         ml.get_key(LLM_KV_TOKENIZER_REMOVE_EXTRA_WS, remove_extra_whitespaces, false);
     }
 
@@ -3433,6 +3439,7 @@ std::vector<llama_token> llama_vocab::impl::tokenize(
                 // tokenizer.encode('', add_special_tokens=False) returns []
 
                 bool is_prev_special = true;  // prefix with space if first token
+                bool is_first_fragment = true;
 
                 if (add_special && add_bos) {
                     GGML_ASSERT(special_bos_id != LLAMA_TOKEN_NULL);
@@ -3444,8 +3451,25 @@ std::vector<llama_token> llama_vocab::impl::tokenize(
                     if (fragment.type == FRAGMENT_BUFFER_VARIANT_TYPE_RAW_TEXT) {
                         std::string text;
 
-                        // prefix with space if previous is special
-                        if (add_space_prefix && is_prev_special) {
+                        // first fragment gets the space prefix; when the HF-style rule is active
+                        // (spm_prepend_hf == true), skip it if the text already
+                        // starts with a space or the escaped-space sequence "▁" (UTF-8 \xe2\x96\x81)
+                        if (is_first_fragment) {
+                            bool prepend = add_space_prefix;
+                            if (spm_prepend_hf) {
+                                const std::string & frag = fragment.raw_text;
+                                const size_t off = fragment.offset;
+                                bool starts_ws = off < frag.size()
+                                    && (frag[off] == ' '
+                                        || (frag.size() - off >= 3
+                                            && frag.compare(off, 3, "\xe2\x96\x81") == 0));
+                                prepend = add_space_prefix && !starts_ws;
+                            }
+                            if (prepend) {
+                                text = ' ';
+                            }
+                            is_first_fragment = false;
+                        } else if (add_space_prefix && is_prev_special && !spm_prepend_hf) {
                             text = ' ';
                         }
 
@@ -3461,6 +3485,7 @@ std::vector<llama_token> llama_vocab::impl::tokenize(
                     } else { // if (fragment.type == FRAGMENT_BUFFER_VARIANT_TYPE_TOKEN)
                         output.push_back(fragment.token);
                         is_prev_special = true;
+                        is_first_fragment = false;
                     }
                 }
 
@@ -4128,6 +4153,10 @@ llama_token llama_vocab::token_mask() const {
 
 bool llama_vocab::get_add_space_prefix() const {
     return pimpl->add_space_prefix;
+}
+
+bool llama_vocab::get_spm_prepend_hf() const {
+    return pimpl->spm_prepend_hf;
 }
 
 bool llama_vocab::get_add_bos() const {

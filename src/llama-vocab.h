@@ -143,6 +143,7 @@ struct llama_vocab {
     llama_token token_fim_sep() const;
 
     bool get_add_space_prefix          () const;
+    bool get_spm_prepend_hf() const;
     bool get_add_bos                   () const;
     bool get_add_eos                   () const;
     bool get_add_sep                   () const;

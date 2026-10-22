@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Callable, Iterable, TYPE_CHECKING
 
+import json
 import torch
 
 if TYPE_CHECKING:
@@ -16,6 +17,39 @@ class AliceAIModel(TextModel):
 
     def set_vocab(self):
         self._set_vocab_sentencepiece()
+        # Check tokenizer_config.json for legacy flag to set spm_prepend_hf
+        tokenizer_config_file = self.dir_model / "tokenizer_config.json"
+        if tokenizer_config_file.is_file():
+            with open(tokenizer_config_file, "r", encoding="utf-8") as f:
+                tokenizer_config_json = json.load(f)
+            if tokenizer_config_json.get("legacy") is False:
+                self.gguf_writer.add_bool("tokenizer.ggml.spm_prepend_hf", True)
+        # piece types live only in the SentencePiece proto; llama.cpp needs
+        # USER_DEFINED for atomic matching. Promote proto type-4 pieces.
+        from sentencepiece import sentencepiece_model_pb2 as sp_pb2
+
+        tokenizer_model = self.dir_model / "tokenizer.model"
+        if not tokenizer_model.is_file():
+            return
+
+        m = sp_pb2.ModelProto()
+        m.ParseFromString(tokenizer_model.read_bytes())
+
+        key = gguf.Keys.Tokenizer.TOKEN_TYPE
+        kv = self.gguf_writer.kv_data[0].get(key)
+        if kv is None:
+            return
+
+        types = list(kv.value)
+        assert len(types) == len(m.pieces), (
+            f"vocab size {len(types)} != proto pieces {len(m.pieces)}"
+        )
+        for i, piece in enumerate(m.pieces):
+            if piece.type == 4:
+                types[i] = gguf.TokenType.USER_DEFINED
+        self.gguf_writer.kv_data[0][key] = gguf.GGUFValue(
+            value=types, type=kv.type, sub_type=kv.sub_type
+        )
 
     def set_gguf_parameters(self):
         super().set_gguf_parameters()

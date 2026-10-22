@@ -1056,6 +1056,10 @@ class ModelBase:
                         for key in (
                             gguf.MODEL_TENSOR.FFN_GATE_INP,
                             gguf.MODEL_TENSOR.FFN_GATE_INP_SHEXP,
+                            # Depth-residual mixing scores feed a softmax; quantizing them perturbs a near-discrete decision (like FFN_GATE_INP)
+                            gguf.MODEL_TENSOR.ATTN_RES_SCORE,
+                            gguf.MODEL_TENSOR.FFN_RES_SCORE,
+                            gguf.MODEL_TENSOR.OUTPUT_RES_SCORE,
                             gguf.MODEL_TENSOR.POS_EMBD,
                             gguf.MODEL_TENSOR.TOKEN_TYPES,
                             gguf.MODEL_TENSOR.SSM_CONV1D,
