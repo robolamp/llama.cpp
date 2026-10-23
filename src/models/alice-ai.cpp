@@ -292,9 +292,9 @@ void llama_model_alice_ai::load_arch_tensors(llama_model_loader & ml) {
         layer.ffn_exp_probs_b = create_tensor(tn(LLM_TENSOR_FFN_EXP_PROBS_B, i), {n_expert}, 0);
 
         // fused gate_up_exps: GGUF shape [hidden, 2*inter, E]
-        layer.ffn_gate_up_exps = create_tensor(tn(LLM_TENSOR_FFN_GATE_UP_EXPS, nullptr, i), {n_embd, n_ff_exp * 2, n_expert}, 0);
+        layer.ffn_gate_up_exps = create_tensor(tn(LLM_TENSOR_FFN_GATE_UP_EXPS, "weight", i), {n_embd, n_ff_exp * 2, n_expert}, 0);
         // ffn_down_exps: GGUF shape [inter, hidden, E]
-        layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, nullptr, i), {n_ff_exp, n_embd, n_expert}, 0);
+        layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), {n_ff_exp, n_embd, n_expert}, 0);
 
         // Shared expert (may be absent if n_expert_shared == 0)
         const int64_t n_ff_shexp = hparams.n_ff_shexp;

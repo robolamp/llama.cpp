@@ -118,6 +118,12 @@ class AliceAIModel(TextModel):
         return False
 
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        # MTP (multi-token prediction) draft tensors are not supported by the
+        # alice_ai graph in llama.cpp; drop them before the generic bid
+        # extraction in base.py maps mtp.layers.0.* onto blk.0 and collides
+        # with the real layer 0 tensors.
+        if name.startswith("mtp."):
+            return
         n_head = self.hparams["num_attention_heads"]
         n_kv_head = self.hparams["num_key_value_heads"]
         n_embd = self.hparams["hidden_size"]
@@ -153,6 +159,24 @@ class AliceAIModel(TextModel):
             yield from super().modify_tensors(
                 data_torch,
                 self.format_tensor_name(gguf.MODEL_TENSOR.FFN_GATE_INP_SHEXP, bid),
+                bid,
+            )
+            return
+
+        # --- Routed experts: fused 3-D stacks. The suffix matters: both
+        # quantizers only accept names ending in .weight (HF names lack it).
+        if name.endswith("mlp.experts.gate_up_proj"):
+            yield from super().modify_tensors(
+                data_torch,
+                self.format_tensor_name(gguf.MODEL_TENSOR.FFN_GATE_UP_EXP, bid),
+                bid,
+            )
+            return
+
+        if name.endswith("mlp.experts.down_proj"):
+            yield from super().modify_tensors(
+                data_torch,
+                self.format_tensor_name(gguf.MODEL_TENSOR.FFN_DOWN_EXP, bid),
                 bid,
             )
             return
